@@ -50,6 +50,19 @@ class DshBridge(Star):
         self._busy = False
         self._busy_since = 0.0
         self._cache: dict[str, tuple[int, int, list[dict]]] = {}
+        self._sent_turns: dict[str, int] = {}
+        self._notify_state: dict[str, int] = {}
+        self._notify_task: asyncio.Task | None = None
+        try:
+            self._notify_state = self._load_notify_state()
+        except Exception:
+            self._notify_state = {}
+        if bool(self._cfg("notify_enabled", False)):
+            try:
+                self._notify_task = asyncio.create_task(self._notify_loop())
+                logger.info(f"[{PLUGIN_NAME}] DSH 完成推送已启用")
+            except Exception as exc:
+                logger.warning(f"[{PLUGIN_NAME}] 启动完成推送失败: {exc}")
 
     # ------------------------------------------------------------- helpers
     def _basic(self) -> dict:
@@ -235,6 +248,162 @@ class DshBridge(Star):
                 pass
 
     # ------------------------------------------------------------- command
+    # ------------------------------------------------------- 完成后推送
+    def _notify_umo(self) -> str:
+        umo = str(self._cfg("notify_umo", "") or "").strip()
+        if umo:
+            return umo
+        qq = str(self._cfg("notify_qq", "") or "").strip()
+        platform = str(self._cfg("notify_platform", "") or "").strip() or "大肥鱼"
+        if qq:
+            return f"{platform}:FriendMessage:{qq}"
+        return ""
+
+    def _notify_state_path(self) -> Path:
+        base = _PLUGIN_DIR / "files"
+        base.mkdir(parents=True, exist_ok=True)
+        return base / "notify_state.json"
+
+    def _load_notify_state(self) -> dict[str, int]:
+        path = self._notify_state_path()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            raw = data.get("sessions") if isinstance(data, dict) else None
+            return {str(k): int(v) for k, v in (raw or {}).items()}
+        except Exception:
+            return {}
+
+    def _save_notify_state(self) -> None:
+        try:
+            self._notify_state_path().write_text(
+                json.dumps({"sessions": self._notify_state}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.warning(f"[{PLUGIN_NAME}] 保存推送状态失败: {exc}")
+
+    @staticmethod
+    def _max_done_turn(events: list[dict]) -> int:
+        turns = [
+            int((e.get("data") or {}).get("turn") or 0)
+            for e in events
+            if e.get("type") == "turn/end"
+        ]
+        return max(turns, default=0)
+
+    @staticmethod
+    def _turn_assistant_text(events: list[dict], turn: int) -> str:
+        parts: list[str] = []
+        for event in events:
+            if event.get("type") != "assistant/message":
+                continue
+            data = event.get("data") or {}
+            if int(data.get("turn") or 0) != turn:
+                continue
+            message = data.get("message") or {}
+            for item in message.get("content") or []:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    text = str(item.get("text") or "").strip()
+                    if text:
+                        parts.append(text)
+        return "\n".join(parts).strip()
+
+    def _write_notify_markdown(self, session_id: str, turn: int, text: str) -> Path:
+        base = _PLUGIN_DIR / "files"
+        base.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d_%H%M%S") + f"_{int(time.time() * 1000) % 1000:03d}"
+        path = base / f"dsh-notify-{stamp}.md"
+        body = (
+            "# DSH 任务完成\n\n"
+            f"- 时间：{time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"- 会话：{session_id}\n"
+            f"- 轮次：{turn}\n"
+            f"- 字数：{len(text)}\n"
+            "\n---\n\n"
+            f"{text}\n"
+        )
+        path.write_text(body, encoding="utf-8")
+        return path
+
+    async def _notify_turn(self, target_umo: str, session_id: str, turn: int, text: str) -> None:
+        try:
+            await self.context.send_message(
+                target_umo,
+                MessageChain([Plain(f"DSH 任务完成：{session_id} 第 {turn} 轮")]),
+            )
+            path = self._write_notify_markdown(session_id, turn, text)
+            await self.context.send_message(
+                target_umo, MessageChain([File(name=path.name, file=str(path))])
+            )
+            if bool(self._cfg("send_screenshot", True)) and win_ui is not None:
+                try:
+                    hwnd = win_ui.find_window(str(self._cfg("window_keyword", "DeepSeek Harness")))
+                    if hwnd:
+                        shot = _PLUGIN_DIR / "shots" / f"dsh-notify-{int(time.time())}.png"
+                        img_path = win_ui.capture_window(hwnd, shot)
+                        await self.context.send_message(
+                            target_umo, MessageChain([Image.fromFileSystem(img_path)])
+                        )
+                except Exception as exc:
+                    logger.warning(f"[{PLUGIN_NAME}] 推送截图失败: {exc}")
+            logger.info(
+                f"[{PLUGIN_NAME}] 已推送 DSH 完成通知: session={session_id} turn={turn} "
+                f"chars={len(text)} -> {target_umo}"
+            )
+        except Exception as exc:
+            logger.error(f"[{PLUGIN_NAME}] 推送 DSH 完成通知失败: {exc}")
+
+    async def _notify_loop(self) -> None:
+        poll = max(5.0, float(self._cfg("notify_poll_seconds", 15) or 15))
+        await asyncio.sleep(min(5.0, poll))
+        while True:
+            try:
+                target = self._notify_umo()
+                if not target:
+                    await asyncio.sleep(poll)
+                    continue
+                root = self._dsh_home() / "sessions"
+                if not root.is_dir():
+                    await asyncio.sleep(poll)
+                    continue
+                now = time.time()
+                scan_hours = float(self._cfg("notify_scan_hours", 48) or 48)
+                for path in root.glob(f"**/{SESSION_FILE}"):
+                    try:
+                        if now - path.stat().st_mtime > scan_hours * 3600:
+                            continue
+                    except OSError:
+                        continue
+                    events = self._read_events(path, force=True)
+                    if not events:
+                        continue
+                    key = str(path)
+                    done = self._max_done_turn(events)
+                    last = int(self._notify_state.get(key, 0) or 0)
+                    if key not in self._notify_state:
+                        # 首次见到：以当前已完成轮次为基线，不回放历史
+                        self._notify_state[key] = done
+                        self._save_notify_state()
+                        continue
+                    if done <= last:
+                        continue
+                    session_id = path.parent.name
+                    for turn in range(last + 1, done + 1):
+                        text = self._turn_assistant_text(events, turn)
+                        if not text:
+                            continue
+                        # 通过 QQ 调用的轮次由命令链路自己发，这里不重复推
+                        if self._busy or self._sent_turns.get(session_id) == turn:
+                            continue
+                        await self._notify_turn(target, session_id, turn, text)
+                        self._notify_state[key] = turn
+                        self._save_notify_state()
+                    self._notify_state[key] = done
+                    self._save_notify_state()
+            except Exception as exc:
+                logger.warning(f"[{PLUGIN_NAME}] 完成推送循环异常: {exc}")
+            await asyncio.sleep(poll)
+
     @filter.event_message_type(filter.EventMessageType.ALL, priority=10 ** 9 - 600)
     async def on_dsh_command(self, event: AstrMessageEvent):
         try:
@@ -359,6 +528,11 @@ class DshBridge(Star):
         if not isinstance(payload, dict):
             payload = {"ok": False, "error": "invalid-response"}
         logger.info(f"[{PLUGIN_NAME}] HTTP 返回: ok={payload.get('ok')}")
+        try:
+            if payload.get("ok") and payload.get("turn"):
+                self._sent_turns[session_id] = int(payload["turn"])
+        except Exception:
+            pass
         if not payload.get("ok"):
             err = str(payload.get("error") or "unknown")
             mapping = {

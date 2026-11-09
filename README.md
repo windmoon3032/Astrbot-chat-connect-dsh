@@ -177,6 +177,26 @@ POST /prompt     header: x-bridge-secret
      413 请求体过大 / 504 timeout（带 partial）
 ```
 
+## 任务完成自动推送（v0.3.0）
+
+无论 DSH 是通过 QQ 调用的，还是直接在桌面里用的，只要一轮任务结束，插件都会把这一轮的 assistant 文本写成 `.md`、连同 DSH 窗口截图发送到指定 QQ。
+
+默认关闭，在 AstrBot 插件配置里打开：
+
+```json
+{
+  "notify_enabled": true,
+  "notify_qq": "123456789",
+  "notify_umo": "大肥鱼:FriendMessage:123456789",
+  "notify_poll_seconds": 15
+}
+```
+
+- `notify_umo` 留空时用 `notify_platform:FriendMessage:notify_qq` 拼；
+- 通过 `/调用dsh` 触发的轮次由命令链路自己发送，不会重复推送；
+- 首次运行以当前已完成轮次为基线，不会回放历史；
+- 状态保存在 `<插件目录>/files/notify_state.json`。
+
 ## 安全
 
 - 桥只监听 `127.0.0.1`，不要暴露到公网；

@@ -90,6 +90,36 @@
         "type": "int",
         "description": "短到可以直接发文字的纯文本上限（字符）；超过或含格式就写 JSON 文件",
         "default": 120
+      },
+      "notify_enabled": {
+        "type": "bool",
+        "description": "DSH 任务结束自动推送（无论是否通过 QQ 调用），默认关闭",
+        "default": false
+      },
+      "notify_qq": {
+        "type": "string",
+        "description": "接收推送的 QQ 号；notify_umo 为空时用它拼 FriendMessage",
+        "default": ""
+      },
+      "notify_umo": {
+        "type": "string",
+        "description": "接收推送的完整 umo，例如 大肥鱼:FriendMessage:123456789；留空则用 notify_platform+notify_qq",
+        "default": ""
+      },
+      "notify_platform": {
+        "type": "string",
+        "description": "拼 umo 用的平台 id，默认 大肥鱼",
+        "default": "大肥鱼"
+      },
+      "notify_poll_seconds": {
+        "type": "int",
+        "description": "轮询 DSH 会话记录的间隔秒数",
+        "default": 15
+      },
+      "notify_scan_hours": {
+        "type": "int",
+        "description": "只扫描最近多少小时内更新的会话",
+        "default": 48
       }
     }
   }
