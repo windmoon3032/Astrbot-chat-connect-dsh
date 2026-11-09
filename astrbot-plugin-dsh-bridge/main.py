@@ -422,6 +422,20 @@ class DshBridge(Star):
                 logger.warning(f"[{PLUGIN_NAME}] 完成推送循环异常: {exc}")
             await asyncio.sleep(poll)
 
+    def _augment_prompt(self, prompt: str) -> str:
+        """给任务追加结果校验要求，避免“应该/可能”这类不确定回复。"""
+        if not bool(self._cfg("verify_results", True)):
+            return prompt
+        hint = str(
+            self._cfg(
+                "verify_hint",
+                "[结果要求] 涉及对电脑的操作时，执行后必须用命令回显或状态查询确认实际结果，"
+                "只报告确认过的事实；确认不了就明确说“无法确认”并给出原因，不要用“应该/可能/大概”之类措辞。",
+            )
+            or ""
+        ).strip()
+        return f"{prompt}\n\n{hint}" if hint else prompt
+
     # ------------------------------------------------------- 会话管理
     def _override_path(self) -> Path:
         base = _PLUGIN_DIR / "files"
@@ -651,10 +665,11 @@ class DshBridge(Star):
             await self.context.send_message(
                 umo, MessageChain([Plain("收到，丢给 dsh 了")])
             )
+            forward_prompt = self._augment_prompt(prompt)
             logger.info(f"[{PLUGIN_NAME}] 转发到 DSH: {prompt[:60]}")
             self._busy = True
             self._busy_since = time.time()
-            task = asyncio.create_task(self._run(prompt, umo))
+            task = asyncio.create_task(self._run(forward_prompt, umo))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
         except Exception as exc:

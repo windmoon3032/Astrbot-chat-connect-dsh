@@ -120,6 +120,16 @@
         "type": "int",
         "description": "只扫描最近多少小时内更新的会话",
         "default": 48
+      },
+      "verify_results": {
+        "type": "bool",
+        "description": "转发任务时追加“结果必须验证”的要求，避免应该/可能这类回复",
+        "default": true
+      },
+      "verify_hint": {
+        "type": "string",
+        "description": "追加在任务末尾的校验要求文本",
+        "default": "[结果要求] 涉及对电脑的操作时，执行后必须用命令回显或状态查询确认实际结果，只报告确认过的事实；确认不了就明确说“无法确认”并给出原因，不要用“应该/可能/大概”之类措辞。"
       }
     }
   }
