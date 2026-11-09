@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+files/
+shots/
+node_modules/
+*.zip
+*.log
+.DS_Store

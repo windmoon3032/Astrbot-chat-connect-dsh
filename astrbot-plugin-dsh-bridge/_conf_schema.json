@@ -1,0 +1,96 @@
+{
+  "basic": {
+    "type": "object",
+    "description": "DSH 桥基础设置。backend=http 时只需要 bridge_url / bridge_secret / session_id（留空自动取最近会话）。",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用插件",
+        "default": true
+      },
+      "admins": {
+        "type": "list",
+        "description": "允许使用该指令的 QQ 号（留空则回退到 AstrBot 全局管理员）",
+        "default": []
+      },
+      "prefixes": {
+        "type": "list",
+        "description": "触发指令前缀；后面必须跟内容，例如 /调用dsh 总结今天群聊",
+        "default": [
+          "/调用dsh",
+          "/dsh"
+        ]
+      },
+      "backend": {
+        "type": "string",
+        "description": "执行后端：http=DSH 进程内插件（推荐，能接当前会话）；acp=官方 ACP 接口（只能接未被桌面占用的会话）；window=窗口自动化（最不稳定，备用）",
+        "default": "http"
+      },
+      "bridge_url": {
+        "type": "string",
+        "description": "DSH 桥 HTTP 地址（http 后端）",
+        "default": "http://127.0.0.1:5795/prompt"
+      },
+      "bridge_secret": {
+        "type": "string",
+        "description": "共享密钥，必须与 DSH 端 dsh-qq-bridge 的 secret 完全一致",
+        "default": ""
+      },
+      "session_id": {
+        "type": "string",
+        "description": "目标 DSH 会话 id（如 session-xxxx）；留空则自动取 DSH_HOME 下最近更新的会话",
+        "default": ""
+      },
+      "dsh_home": {
+        "type": "string",
+        "description": "DSH 数据目录，留空用 %USERPROFILE%\\.dsh 或环境变量 DSH_HOME",
+        "default": ""
+      },
+      "timeout_seconds": {
+        "type": "int",
+        "description": "等待 DSH 执行完成的最长秒数",
+        "default": 1500
+      },
+      "max_chars": {
+        "type": "int",
+        "description": "已弃用：文件模式不再截断，仅为兼容旧配置保留",
+        "default": 3500
+      },
+      "send_screenshot": {
+        "type": "bool",
+        "description": "结果附带 DSH 窗口截图（需要 pywin32 且 DSH 窗口存在）",
+        "default": true
+      },
+      "acp_cwd": {
+        "type": "string",
+        "description": "acp 后端的工作目录；留空用当前用户目录",
+        "default": ""
+      },
+      "window_keyword": {
+        "type": "string",
+        "description": "window 后端用的 DSH 窗口标题关键字",
+        "default": "DeepSeek Harness"
+      },
+      "input_x_ratio": {
+        "type": "float",
+        "description": "window 后端：输入框横向位置（占窗口宽比例）",
+        "default": 0.5
+      },
+      "input_y_ratio": {
+        "type": "float",
+        "description": "window 后端：输入框纵向位置（占窗口高比例）",
+        "default": 0.94
+      },
+      "poll_interval": {
+        "type": "float",
+        "description": "window 后端：轮询会话记录的间隔秒数",
+        "default": 2.0
+      },
+      "short_text_max_chars": {
+        "type": "int",
+        "description": "短到可以直接发文字的纯文本上限（字符）；超过或含格式就写 JSON 文件",
+        "default": 120
+      }
+    }
+  }
+}

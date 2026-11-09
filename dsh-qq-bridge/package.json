@@ -1,0 +1,27 @@
+{
+  "name": "dsh-qq-bridge",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js"
+  },
+  "description": "Local loopback HTTP bridge that lets an external bot inject prompts into the live DeepSeek Harness session and read back the assistant reply.",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "bridge",
+    "qq"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "dsh": ">=0.2.0-rc.2 <0.3.0"
+  }
+}

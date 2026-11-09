@@ -1,0 +1,14 @@
+# dsh-qq-bridge bundle layer.
+#
+# port       监听端口（只绑 127.0.0.1）
+# secret     共享密钥；必须和 AstrBot 插件里的 bridge_secret 完全一致
+# timeoutMs  单次请求最长等待；默认 25 分钟
+#
+# 安装后把 secret 改成你自己的随机字符串，不要用示例值。
+- insert:
+    - id: dsh-qq-bridge
+      name: dsh-qq-bridge
+      config:
+        port: 5795
+        secret: ""
+        timeoutMs: 1500000
