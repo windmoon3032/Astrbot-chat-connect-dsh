@@ -80,7 +80,7 @@ POST /prompt
    curl http://127.0.0.1:5795/health
    ```
 
-   应返回 `version: 0.2.0`、`timeoutMs: 1500000`。
+   应返回 `version: 0.2.1`、`timeoutMs: 1500000`。
 
 ## 卸载
 
