@@ -1,6 +1,6 @@
 # Astrbot-chat-connect-dsh
 
-把 **QQ（AstrBot）** 和本机 **DeepSeek Harness（DSH）** 的会话连起来：在 QQ 里发 `/调用dsh <任务>`，机器人不进行理解、不参与对话，直接把这句话送进 DSH 当前会话执行；DSH 跑完后，把这一轮的完整回复文本发回 QQ（极短纯文本直接发消息，其余写成 JSON 文件发送）。
+把 **QQ（AstrBot）** 和本机 **DeepSeek Harness（DSH）** 的会话连起来：在 QQ 里发 `/调用dsh <任务>`，机器人不进行理解、不参与对话，直接把这句话送进 DSH 当前会话执行；DSH 跑完后，把这一轮的完整回复文本发回 QQ（极短纯文本直接发消息，其余写成 Markdown 文件发送）。
 
 适合：人不在电脑前，但想用 QQ 指挥 DSH 干活（总结群聊、跑脚本、查文件、继续某个对话任务等）。
 
@@ -22,7 +22,7 @@ DSH 宿主进程 · dsh-qq-bridge
   │  ctx.get('agents').get(sessionId).followup(用户消息)
   │  监听 session/event → assistant/message → turn/end
   ▼
-返回 { ok, text } → AstrBot 发回 QQ（短文本直接发，长文本 JSON 文件）
+返回 { ok, text } → AstrBot 发回 QQ（短文本直接发，长文本 Markdown 文件）
 ```
 
 ## 下载
@@ -128,7 +128,7 @@ Release 里提供可直接安装的包和描述文件：
 | `admins` | `[]` | 允许使用的 QQ 号；留空回退 AstrBot 全局管理员 |
 | `prefixes` | `/调用dsh`、`/dsh` | 指令前缀 |
 | `timeout_seconds` | `1500` | 最长等待（25 分钟） |
-| `short_text_max_chars` | `120` | 短文本直接发的上限，其余写 JSON 文件 |
+| `short_text_max_chars` | `120` | 短文本直接发的上限，其余写 Markdown 文件 |
 | `send_screenshot` | `true` | 是否附带 DSH 窗口截图 |
 | `acp_cwd` | 空 | ACP 后端工作目录 |
 | `window_keyword` 等 | — | 窗口后端参数 |
@@ -151,16 +151,18 @@ Release 里提供可直接安装的包和描述文件：
 
 - 只有管理员可用；
 - 命中后先回「收到，丢给 dsh 了」，然后 `stop_event`，不进入模型；
-- 极短纯文本直接发消息，其余写成 `.json` 文件发送（不截断）：
+- 极短纯文本直接发消息，其余写成 `.md` 文件发送（不截断）：
 
-  ```json
-  {
-    "source": "dsh-qq-bridge",
-    "createdAt": "2026-11-10T00:00:00+08:00",
-    "session": "大肥鱼:GroupMessage:123456789",
-    "chars": 1234,
-    "text": "完整回复……"
-  }
+  ```markdown
+  # DSH 回复
+
+  - 时间：2026-11-10 00:00:00
+  - 会话：大肥鱼:GroupMessage:123456789
+  - 字数：1234
+
+  ---
+
+  完整回复……
   ```
 
 ## HTTP 接口（DSH 侧）

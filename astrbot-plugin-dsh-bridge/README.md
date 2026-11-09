@@ -65,26 +65,28 @@ QQ → 本机 [DeepSeek Harness](https://github.com/deepseek-ai) 会话的桥。
 ## 输出格式
 
 - **极短纯文本**（单行、无 Markdown/JSON/代码样式、≤ `short_text_max_chars` 字，默认 120）→ 直接发一条文字消息；
-- **其余全部**（长文本、多行、Markdown、代码块、JSON 等）→ 写成 `.json` 文件发送：
+- **其余全部**（长文本、多行、Markdown、代码块、表格等）→ 写成 `.md` 文件发送：
 
-  ```json
-  {
-    "source": "dsh-qq-bridge",
-    "createdAt": "2026-11-09T23:57:00+08:00",
-    "session": "大肥鱼:GroupMessage:123456789",
-    "chars": 1234,
-    "text": "完整回复文本……"
-  }
+  ```markdown
+  # DSH 回复
+
+  - 时间：2026-11-10 00:20:00
+  - 会话：大肥鱼:GroupMessage:123456789
+  - 字数：1234
+
+  ---
+
+  完整回复文本……
   ```
 
-  文件保存在 `<插件目录>/files/dsh-reply-*.json`，只保留最近 100 个；文件模式**不截断**。
+  文件保存在 `<插件目录>/files/dsh-reply-*.md`，只保留最近 100 个；文件模式**不截断**，Markdown 换行正常，阅读器直接可读。
 
 ## 行为
 
 1. 收到指令 → 回一句「收到，丢给 dsh 了」；
 2. 根据 `backend` 转发；
 3. `http` 后端：POST 给 DSH 桥，等它返回本轮的 assistant 文本（最长 `timeout_seconds`）；
-4. 文本按 1200 字分条发回，超过 `max_chars` 截断；截图开启时再发一张 DSH 窗口图。
+4. 短文本直接发消息，其余写 `.md` 文件发送（不截断）；截图开启时再发一张 DSH 窗口图。
 
 ## 常见问题
 

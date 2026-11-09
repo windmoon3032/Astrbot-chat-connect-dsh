@@ -181,22 +181,24 @@ class DshBridge(Star):
             return False
         return True
 
-    def _write_reply_json(self, umo: str, text: str) -> Path:
+    def _write_reply_markdown(self, umo: str, text: str) -> Path:
+        """把长回复写成 Markdown：元信息 + 正文，避免 JSON 转义影响阅读。"""
         base = _PLUGIN_DIR / "files"
         base.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y%m%d_%H%M%S") + f"_{int(time.time() * 1000) % 1000:03d}"
-        path = base / f"dsh-reply-{stamp}.json"
-        payload = {
-            "source": "dsh-qq-bridge",
-            "createdAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-            "session": umo,
-            "chars": len(text),
-            "text": text,
-        }
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        # 只保留最近 100 个，避免磁盘堆积
+        path = base / f"dsh-reply-{stamp}.md"
+        created = time.strftime("%Y-%m-%d %H:%M:%S")
+        body = (
+            "# DSH 回复\n\n"
+            f"- 时间：{created}\n"
+            f"- 会话：{umo}\n"
+            f"- 字数：{len(text)}\n"
+            "\n---\n\n"
+            f"{text}\n"
+        )
+        path.write_text(body, encoding="utf-8")
         try:
-            files = sorted(base.glob("dsh-reply-*.json"), key=lambda p: p.stat().st_mtime)
+            files = sorted(base.glob("dsh-reply-*.md"), key=lambda p: p.stat().st_mtime)
             for old in files[:-100]:
                 old.unlink(missing_ok=True)
         except Exception:
@@ -212,12 +214,12 @@ class DshBridge(Star):
             if self._is_short_plain(value):
                 await self.context.send_message(umo, MessageChain([Plain(value)]))
                 return
-            path = self._write_reply_json(umo, value)
+            path = self._write_reply_markdown(umo, value)
             await self.context.send_message(
                 umo, MessageChain([File(name=path.name, file=str(path))])
             )
             logger.info(
-                f"[{PLUGIN_NAME}] 回复已写 JSON 文件发送: {path.name} ({len(value)} 字)"
+                f"[{PLUGIN_NAME}] 回复已写 Markdown 文件发送: {path.name} ({len(value)} 字)"
             )
         except Exception as exc:
             logger.error(f"[{PLUGIN_NAME}] 发送回复失败: {exc}")
