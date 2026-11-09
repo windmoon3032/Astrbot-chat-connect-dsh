@@ -46,6 +46,8 @@ Release 里提供可直接安装的包和描述文件：
 
 ## 安装
 
+### 可以直接找大肥鱼许愿
+
 ### 1. DSH 侧（dsh-qq-bridge）
 
 以默认 `desktop` profile 为例，`<profile>` 换成实际 profile 名：
