@@ -109,7 +109,7 @@ QQ → 本机 [DeepSeek Harness](https://github.com/deepseek-ai) 会话的桥。
 
 - Windows 10/11；
 - AstrBot `>=4.13,<5`；
-- DSH `0.2.2-rc.3` 验证通过（DSH 侧插件要求 `>=0.2.2-rc.2 <0.3.0`）。
+- DSH `0.2.3-rc.3` 验证通过（DSH 侧插件要求 `>=0.2.3-rc.2 <0.3.0`）。
 
 ## License
 

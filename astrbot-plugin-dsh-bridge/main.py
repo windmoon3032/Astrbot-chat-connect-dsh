@@ -48,6 +48,7 @@ class DshBridge(Star):
         self.config = config or {}
         self._tasks: set[asyncio.Task] = set()
         self._busy = False
+        self._busy_since = 0.0
         self._cache: dict[str, tuple[int, int, list[dict]]] = {}
 
     # ------------------------------------------------------------- helpers
@@ -213,13 +214,15 @@ class DshBridge(Star):
         try:
             if self._is_short_plain(value):
                 await self.context.send_message(umo, MessageChain([Plain(value)]))
+                logger.info(f"[{PLUGIN_NAME}] 已直接发送文字: {value[:60]}")
                 return
             path = self._write_reply_markdown(umo, value)
             await self.context.send_message(
                 umo, MessageChain([File(name=path.name, file=str(path))])
             )
             logger.info(
-                f"[{PLUGIN_NAME}] 回复已写 Markdown 文件发送: {path.name} ({len(value)} 字)"
+                f"[{PLUGIN_NAME}] 回复已写 Markdown 文件发送: {path.name} "
+                f"({len(value)} 字, {path})"
             )
         except Exception as exc:
             logger.error(f"[{PLUGIN_NAME}] 发送回复失败: {exc}")
@@ -264,18 +267,33 @@ class DshBridge(Star):
                 event.stop_event()
                 return
             if self._busy:
-                await self.context.send_message(
-                    event.unified_msg_origin,
-                    MessageChain([Plain("上一个 dsh 任务还在跑，等它完")]),
-                )
-                event.stop_event()
-                return
+                elapsed = time.time() - float(self._busy_since or 0)
+                limit = float(self._cfg("timeout_seconds", 1500) or 1500) + 180
+                if elapsed > limit:
+                    logger.warning(
+                        f"[{PLUGIN_NAME}] 忙锁已 {int(elapsed)}s，超过上限 {int(limit)}s，强制释放"
+                    )
+                    self._busy = False
+                    self._busy_since = 0.0
+                else:
+                    minutes = int(elapsed // 60)
+                    suffix = f"（已 {minutes} 分钟）" if minutes >= 1 else ""
+                    await self.context.send_message(
+                        event.unified_msg_origin,
+                        MessageChain(
+                            [Plain(f"上一个 dsh 任务还在跑{suffix}，等它完")]
+                        ),
+                    )
+                    event.stop_event()
+                    return
             umo = event.unified_msg_origin
             event.stop_event()
             await self.context.send_message(
                 umo, MessageChain([Plain("收到，丢给 dsh 了")])
             )
             logger.info(f"[{PLUGIN_NAME}] 转发到 DSH: {prompt[:60]}")
+            self._busy = True
+            self._busy_since = time.time()
             task = asyncio.create_task(self._run(prompt, umo))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
@@ -481,3 +499,4 @@ class DshBridge(Star):
                 pass
         finally:
             self._busy = False
+            self._busy_since = 0.0

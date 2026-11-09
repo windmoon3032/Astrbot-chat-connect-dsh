@@ -23,7 +23,7 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 export const name = 'dsh-qq-bridge';
 export const inject = ['agents'];
 
-const VERSION = '0.2.2';
+const VERSION = '0.2.3';
 const MAX_BODY_BYTES = 256 * 1024;
 
 function safeEqual(a, b) {
