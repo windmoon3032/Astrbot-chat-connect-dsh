@@ -59,6 +59,9 @@ class DshBridge(Star):
             self._notify_state = {}
         if bool(self._cfg("notify_enabled", False)):
             try:
+                old = self._notify_task
+                if old and not old.done():
+                    old.cancel()
                 self._notify_task = asyncio.create_task(self._notify_loop())
                 logger.info(f"[{PLUGIN_NAME}] DSH 完成推送已启用")
             except Exception as exc:
@@ -248,6 +251,20 @@ class DshBridge(Star):
                 pass
 
     # ------------------------------------------------------------- command
+    async def terminate(self):
+        """插件重载时取消后台推送任务，否则旧循环会继续发，造成重复消息。"""
+        task = self._notify_task
+        self._notify_task = None
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+        logger.info(f"[{PLUGIN_NAME}] 完成推送任务已停止")
+
     # ------------------------------------------------------- 完成后推送
     def _notify_umo(self) -> str:
         umo = str(self._cfg("notify_umo", "") or "").strip()

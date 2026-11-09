@@ -41,7 +41,7 @@ Release 里提供可直接安装的包和描述文件：
 
 - Windows 10 / 11
 - [AstrBot](https://github.com/AstrBotDevs/AstrBot) `>=4.13,<5`（`aiocqhttp` 平台，NapCat / LLOneBot 等）
-- DeepSeek Harness `>=0.2.0-rc.2 <0.3.0`（在 `0.2.3-rc.3` 验证）
+- DeepSeek Harness `>=0.2.0-rc.2 <0.3.1`（在 `0.2.3-rc.3` 验证）
 - Python 依赖（AstrBot 侧）：`pywin32`、`zstandard`（仅截图/窗口后端需要）
 
 ## 安装
@@ -177,7 +177,7 @@ POST /prompt     header: x-bridge-secret
      413 请求体过大 / 504 timeout（带 partial）
 ```
 
-## 任务完成自动推送（v0.3.0）
+## 任务完成自动推送（v0.3.1）
 
 无论 DSH 是通过 QQ 调用的，还是直接在桌面里用的，只要一轮任务结束，插件都会把这一轮的 assistant 文本写成 `.md`、连同 DSH 窗口截图发送到指定 QQ。
 
