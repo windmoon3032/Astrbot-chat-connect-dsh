@@ -43,6 +43,8 @@ SESSION_FILE = "session.v4.jsonl.zstd"
 
 
 class DshBridge(Star):
+    _notify_generation = 0
+
     def __init__(self, context: Context, config: dict | None = None):
         super().__init__(context)
         self.config = config or {}
@@ -63,6 +65,8 @@ class DshBridge(Star):
                 old = self._notify_task
                 if old and not old.done():
                     old.cancel()
+                type(self)._notify_generation += 1
+                self._notify_gen = type(self)._notify_generation
                 self._notify_task = asyncio.create_task(self._notify_loop())
                 logger.info(f"[{PLUGIN_NAME}] DSH 完成推送已启用")
             except Exception as exc:
@@ -254,6 +258,7 @@ class DshBridge(Star):
     # ------------------------------------------------------------- command
     async def terminate(self):
         """插件重载时取消后台推送任务，否则旧循环会继续发，造成重复消息。"""
+        type(self)._notify_generation += 1
         task = self._notify_task
         self._notify_task = None
         if task and not task.done():
@@ -375,6 +380,9 @@ class DshBridge(Star):
         poll = max(5.0, float(self._cfg("notify_poll_seconds", 15) or 15))
         await asyncio.sleep(min(5.0, poll))
         while True:
+            if getattr(self, "_notify_gen", 0) != type(self)._notify_generation:
+                logger.info(f"[{PLUGIN_NAME}] 旧推送循环退出")
+                return
             try:
                 target = self._notify_umo()
                 if not target:
@@ -412,6 +420,8 @@ class DshBridge(Star):
                             continue
                         # 通过 QQ 调用的轮次由命令链路自己发，这里不重复推
                         if self._busy or self._sent_turns.get(session_id) == turn:
+                            continue
+                        if int(self._notify_state.get(key, 0) or 0) >= turn:
                             continue
                         await self._notify_turn(target, session_id, turn, text)
                         self._notify_state[key] = turn
