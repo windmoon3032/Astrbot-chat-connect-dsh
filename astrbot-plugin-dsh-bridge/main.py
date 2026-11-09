@@ -312,24 +312,35 @@ class DshBridge(Star):
         ).encode()
         headers = {"Content-Type": "application/json", "x-bridge-secret": secret}
         timeout = timeout + 30
-        try:
+
+        def _post() -> dict:
             req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                payload = json.loads(resp.read().decode("utf-8", "ignore") or "{}")
-        except urllib.error.HTTPError as exc:
-            # 409 / 504 也是 JSON，要读出来按业务错误处理，不能当网络异常
             try:
-                payload = json.loads(exc.read().decode("utf-8", "ignore") or "{}")
-            except Exception:
-                payload = {"ok": False, "error": f"HTTP {exc.code}"}
-            if not isinstance(payload, dict):
-                payload = {"ok": False, "error": f"HTTP {exc.code}"}
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    return json.loads(resp.read().decode("utf-8", "ignore") or "{}")
+            except urllib.error.HTTPError as exc:
+                # 409 / 504 也是 JSON，要读出来按业务错误处理，不能当网络异常
+                try:
+                    return json.loads(exc.read().decode("utf-8", "ignore") or "{}")
+                except Exception:
+                    return {"ok": False, "error": f"HTTP {exc.code}"}
+
+        logger.info(
+            f"[{PLUGIN_NAME}] HTTP 等待 DSH: session={session_id} timeout={int(timeout)}s"
+        )
+        try:
+            # 关键：urlopen 是阻塞调用，必须丢到线程里，否则会卡死 AstrBot 事件循环
+            payload = await asyncio.to_thread(_post)
         except Exception as exc:
             detail = str(exc)
             if "Connection refused" in detail or "10061" in detail:
                 detail = "DSH 桥没在监听（检查端口/DSH 是否启动/插件是否加载）"
+            logger.error(f"[{PLUGIN_NAME}] 调 DSH 桥失败: {detail[:300]}")
             await self._send_text(umo, f"调 DSH 桥失败：{detail[:300]}")
             return
+        if not isinstance(payload, dict):
+            payload = {"ok": False, "error": "invalid-response"}
+        logger.info(f"[{PLUGIN_NAME}] HTTP 返回: ok={payload.get('ok')}")
         if not payload.get("ok"):
             err = str(payload.get("error") or "unknown")
             mapping = {

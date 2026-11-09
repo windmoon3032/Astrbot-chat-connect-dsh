@@ -9,7 +9,7 @@
 
 ## 兼容性
 
-- DSH `>= 0.2.0-rc.2 < 0.3.0`（在 `0.2.1-rc.3` 上验证）
+- DSH `>= 0.2.0-rc.2 < 0.3.0`（在 `0.2.2-rc.3` 上验证）
 - 仅 Windows（配合 AstrBot 的 QQ 桥插件使用；插件本身是纯 Node，跨平台也可跑，但 AstrBot 侧目前只支持 Windows）
 
 ## 接口
@@ -80,7 +80,7 @@ POST /prompt
    curl http://127.0.0.1:5795/health
    ```
 
-   应返回 `version: 0.2.1`、`timeoutMs: 1500000`。
+   应返回 `version: 0.2.2`、`timeoutMs: 1500000`。
 
 ## 卸载
 

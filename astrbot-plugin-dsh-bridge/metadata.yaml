@@ -1,7 +1,7 @@
 name: astrbot_plugin_dsh_bridge
 display_name: DSH 桥（QQ → 本机 DeepSeek Harness）
 desc: 管理员发送「/调用dsh <内容>」时，不经过大模型理解，直接把这句话送进本机 DeepSeek Harness 的当前会话执行；跑完后把完整回复文本发回聊天：极短纯文本直接发消息，其余写成 Markdown 文件发送（不截断）。默认走 DSH 进程内插件（HTTP），并提供 ACP 与窗口自动化两种备用后端。DSH 路径、工作目录、端口、共享密钥、会话 id 均可配置，适用于任意 Windows 机器上的 AstrBot + DSH。
-version: v0.2.1
+version: v0.2.2
 author: local
 astrbot_version: ">=4.13,<5"
 support_platforms:

@@ -31,8 +31,8 @@ Release 里提供可直接安装的包和描述文件：
 
 **https://github.com/windmoon3032/Astrbot-chat-connect-dsh/releases/latest**
 
-- `dsh-qq-bridge-0.2.1.zip` — DSH 侧插件
-- `astrbot-plugin-dsh-bridge-0.2.1.zip` — AstrBot 侧插件
+- `dsh-qq-bridge-0.2.2.zip` — DSH 侧插件
+- `astrbot-plugin-dsh-bridge-0.2.2.zip` — AstrBot 侧插件
 - `dsh-qq-bridge.info.json` — 用途、安装、配置、HTTP 接口、排查表
 
 也可以直接使用仓库里的源码目录。
@@ -41,7 +41,7 @@ Release 里提供可直接安装的包和描述文件：
 
 - Windows 10 / 11
 - [AstrBot](https://github.com/AstrBotDevs/AstrBot) `>=4.13,<5`（`aiocqhttp` 平台，NapCat / LLOneBot 等）
-- DeepSeek Harness `>=0.2.0-rc.2 <0.3.0`（在 `0.2.1-rc.3` 验证）
+- DeepSeek Harness `>=0.2.0-rc.2 <0.3.0`（在 `0.2.2-rc.3` 验证）
 - Python 依赖（AstrBot 侧）：`pywin32`、`zstandard`（仅截图/窗口后端需要）
 
 ## 安装
@@ -94,7 +94,7 @@ Release 里提供可直接安装的包和描述文件：
    curl http://127.0.0.1:5795/health
    ```
 
-   应返回 `"version":"0.2.1"`、`"timeoutMs":1500000`。
+   应返回 `"version":"0.2.2"`、`"timeoutMs":1500000`。
 
 > 端口被占用时插件只告警，不会让 DSH 崩溃；`secret` 为空时会提示配置。
 
