@@ -51,6 +51,7 @@ class DshBridge(Star):
         self._busy_since = 0.0
         self._cache: dict[str, tuple[int, int, list[dict]]] = {}
         self._sent_turns: dict[str, int] = {}
+        self._session_override: str = self._load_session_override()
         self._notify_state: dict[str, int] = {}
         self._notify_task: asyncio.Task | None = None
         try:
@@ -421,6 +422,176 @@ class DshBridge(Star):
                 logger.warning(f"[{PLUGIN_NAME}] 完成推送循环异常: {exc}")
             await asyncio.sleep(poll)
 
+    # ------------------------------------------------------- 会话管理
+    def _override_path(self) -> Path:
+        base = _PLUGIN_DIR / "files"
+        base.mkdir(parents=True, exist_ok=True)
+        return base / "session_override.json"
+
+    def _load_session_override(self) -> str:
+        try:
+            data = json.loads(self._override_path().read_text(encoding="utf-8"))
+            return str(data.get("session_id") or "").strip()
+        except Exception:
+            return ""
+
+    def _save_session_override(self, session_id: str) -> None:
+        self._session_override = session_id
+        try:
+            self._override_path().write_text(
+                json.dumps({"session_id": session_id}, ensure_ascii=False), encoding="utf-8"
+            )
+        except Exception as exc:
+            logger.warning(f"[{PLUGIN_NAME}] 保存会话选择失败: {exc}")
+
+    def _list_sessions_disk(self) -> list[dict]:
+        root = self._dsh_home() / "sessions"
+        result: list[dict] = []
+        if not root.is_dir():
+            return result
+        for path in root.glob(f"**/{SESSION_FILE}"):
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            title = ""
+            events = self._read_events(path, force=True)
+            for event in reversed(events):
+                if event.get("type") == "session/title":
+                    title = str((event.get("data") or {}).get("title") or "").strip()
+                    break
+            if not title:
+                for event in events:
+                    if event.get("type") != "user/message":
+                        continue
+                    msg = (event.get("data") or {}).get("message") or {}
+                    for item in msg.get("content") or []:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            title = str(item.get("text") or "").strip().replace("\n", " ")
+                            break
+                    if title:
+                        break
+            result.append(
+                {
+                    "id": path.parent.name,
+                    "title": (title[:40] + "…") if len(title) > 40 else (title or "（无标题）"),
+                    "mtime": mtime,
+                }
+            )
+        result.sort(key=lambda x: x["mtime"], reverse=True)
+        return result
+
+    def _http_json(self, path: str, payload: dict, timeout: float = 30) -> dict:
+        import urllib.error
+        import urllib.request
+
+        base = str(self._cfg("bridge_url", "http://127.0.0.1:5795/prompt") or "")
+        base = base.rsplit("/", 1)[0]
+        url = f"{base}/{path.lstrip('/')}"
+        secret = str(self._cfg("bridge_secret", "") or "").strip()
+        data = json.dumps(payload, ensure_ascii=False).encode()
+
+        def _do() -> dict:
+            req = urllib.request.Request(
+                url,
+                data=data,
+                headers={"Content-Type": "application/json", "x-bridge-secret": secret},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    return json.loads(resp.read().decode("utf-8", "ignore") or "{}")
+            except urllib.error.HTTPError as exc:
+                try:
+                    return json.loads(exc.read().decode("utf-8", "ignore") or "{}")
+                except Exception:
+                    return {"ok": False, "error": f"HTTP {exc.code}"}
+
+        return _do()
+
+    async def _handle_subcommand(self, prompt: str, event: AstrMessageEvent) -> bool:
+        """处理 /dsh 会话/切换/新建/模型/推理；返回 True 表示已处理。"""
+        if not prompt:
+            return False
+        parts = prompt.split(maxsplit=1)
+        cmd = parts[0].lower()
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        umo = event.unified_msg_origin
+        if cmd not in {"会话", "列表", "sessions", "切换", "新建", "模型", "推理"}:
+            return False
+
+        if cmd in {"会话", "列表", "sessions"}:
+            items = await asyncio.to_thread(self._list_sessions_disk)
+            if not items:
+                await self._send_text(umo, "没找到 DSH 会话记录")
+                return True
+            current = self._session_override or self._bridge_session_id()
+            lines = [f"DSH 会话共 {len(items)} 个（最近 20 个）："]
+            for idx, item in enumerate(items[:20], 1):
+                mark = " ← 当前" if item["id"] == current else ""
+                lines.append(f"{idx}. {item['title']}{mark}")
+            lines.append("切换：/dsh 切换 <序号或 session-id>")
+            await self._send_text(umo, "\n".join(lines))
+            return True
+
+        if cmd == "切换":
+            if not arg:
+                await self._send_text(umo, "用法：/dsh 切换 <序号或 session-id>")
+                return True
+            items = await asyncio.to_thread(self._list_sessions_disk)
+            target = ""
+            if arg.isdigit() and 1 <= int(arg) <= len(items):
+                target = items[int(arg) - 1]["id"]
+            elif arg.startswith("session-") or re.match(r"^[0-9a-f-]{8,}$", arg):
+                target = arg
+            else:
+                await self._send_text(umo, "序号超出范围，先发 /dsh 会话 看列表")
+                return True
+            self._save_session_override(target)
+            await self._send_text(umo, f"已切换转发目标到 {target}")
+            return True
+
+        if cmd == "新建":
+            if self._busy:
+                await self._send_text(umo, "正在跑任务，等它完再新建")
+                return True
+            result = await asyncio.to_thread(self._http_json, "session/new", {})
+            sid = str(result.get("sessionId") or "")
+            if not sid:
+                await self._send_text(umo, f"新建失败：{result.get('error') or result}")
+                return True
+            self._save_session_override(sid)
+            await self._send_text(umo, f"已新建会话并切换：{sid}")
+            return True
+
+        if cmd in {"模型", "推理"}:
+            if self._busy:
+                await self._send_text(umo, "正在跑任务，等它完再改")
+                return True
+            target = self._session_override or self._bridge_session_id()
+            if not target:
+                await self._send_text(umo, "没有可用会话，先发 /dsh 会话 或 /dsh 新建")
+                return True
+            payload: dict = {"sessionId": target}
+            if cmd == "模型":
+                if not arg:
+                    await self._send_text(umo, "用法：/dsh 模型 <模型名>")
+                    return True
+                payload["model"] = arg
+            else:
+                if arg not in {"low", "medium", "high"}:
+                    await self._send_text(umo, "推理强度可选：low / medium / high")
+                    return True
+                payload["reasoningEffort"] = arg
+            result = await asyncio.to_thread(self._http_json, "model", payload)
+            if result.get("ok"):
+                await self._send_text(umo, f"已切换 {cmd}：{json.dumps(result.get('selection'), ensure_ascii=False)}")
+            else:
+                await self._send_text(umo, f"切换失败：{result.get('error') or result}")
+            return True
+
+        return False
+
     @filter.event_message_type(filter.EventMessageType.ALL, priority=10 ** 9 - 600)
     async def on_dsh_command(self, event: AstrMessageEvent):
         try:
@@ -445,6 +616,9 @@ class DshBridge(Star):
                     return
                 matched = m.group(1).strip()
             prompt = matched.strip(" \t\r\n:：")
+            if await self._handle_subcommand(prompt, event):
+                event.stop_event()
+                return
             if not prompt:
                 await self.context.send_message(
                     event.unified_msg_origin,
