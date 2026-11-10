@@ -24,7 +24,7 @@ except Exception:  # 窗口后端才需要，缺了不影响 HTTP/ACP 后端
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
-from astrbot.api.message_components import File, Image, Plain
+from astrbot.api.message_components import At, File, Image, Plain
 from astrbot.api.star import Context, Star
 
 PLUGIN_NAME = "astrbot_plugin_dsh_bridge"
@@ -53,6 +53,7 @@ class DshBridge(Star):
         self._busy_since = 0.0
         self._cache: dict[str, tuple[int, int, list[dict]]] = {}
         self._sent_turns: dict[str, int] = {}
+        self._at_targets: list[str] = []
         self._session_override: str = self._load_session_override()
         self._notify_state: dict[str, int] = {}
         self._notify_task: asyncio.Task | None = None
@@ -187,6 +188,62 @@ class DshBridge(Star):
                         parts.append(text)
         return "\n".join(parts).strip()
 
+    AT_PATTERN = re.compile(r"\[at[:：]\s*(all|\d{5,12})\s*\]", re.I)
+
+    def _at_chain(self, text: str) -> MessageChain:
+        """把 [at:123456] / [at：123456] 转成真正的 QQ At 组件。"""
+        chain: list = []
+        pos = 0
+        for m in self.AT_PATTERN.finditer(text):
+            if m.start() > pos:
+                chain.append(Plain(text[pos : m.start()]))
+            chain.append(At(qq=m.group(1)))
+            pos = m.end()
+        if pos < len(text):
+            chain.append(Plain(text[pos:]))
+        return MessageChain(chain or [Plain(text)])
+
+    async def _at_hints(self, event: AstrMessageEvent) -> str:
+        """从原消息里提取被 @ 的人，给 DSH 提供 QQ 号映射。"""
+        found: list[tuple[str, str]] = []
+        try:
+            for seg in getattr(event.message_obj, "message", []) or []:
+                if isinstance(seg, At):
+                    qq = str(getattr(seg, "qq", "") or "").strip()
+                    if qq and qq != "all":
+                        found.append((qq, str(getattr(seg, "name", "") or "").strip()))
+        except Exception:
+            pass
+        text = str(event.message_str or "")
+        names = re.findall(r"@([^\s@]{1,20})", text)
+        if names and event.get_group_id():
+            try:
+                members = await event.bot.call_action(
+                    "get_group_member_list", group_id=int(event.get_group_id())
+                )
+                lookup = {}
+                for m in members or []:
+                    uid = str(m.get("user_id") or "")
+                    for key in (m.get("card"), m.get("nickname")):
+                        if key:
+                            lookup[str(key).strip()] = uid
+                for name in names:
+                    if name in lookup:
+                        found.append((lookup[name], name))
+            except Exception:
+                pass
+        seen = set()
+        lines = []
+        for qq, name in found:
+            key = (qq, name)
+            if key in seen:
+                continue
+            seen.add(key)
+            lines.append(f"{name or '某人'}=QQ {qq}")
+        if not lines:
+            return ""
+        return "[本机提示] 需要 at 时请输出 [at:QQ号]：" + "；".join(lines)
+
     def _is_short_plain(self, text: str) -> bool:
         """极短、单行、无 Markdown/JSON/代码样式的纯文本，才走文字消息。"""
         value = str(text or "").strip()
@@ -232,7 +289,19 @@ class DshBridge(Star):
         value = str(text or "").strip()
         if not value:
             return
+        # DSH 不知道 QQ 时会输出 [at：xxxxxxx]，只有一个目标时替换成真实 QQ
+        if len(getattr(self, "_at_targets", [])) == 1:
+            value = re.sub(
+                r"\[at[:：]\s*x{3,}\s*\]",
+                f"[at:{self._at_targets[0]}]",
+                value,
+                flags=re.I,
+            )
         try:
+            if self.AT_PATTERN.search(value):
+                await self.context.send_message(umo, self._at_chain(value))
+                logger.info(f"[{PLUGIN_NAME}] 已发送带 At 的文字: {value[:60]}")
+                return
             if self._is_short_plain(value):
                 await self.context.send_message(umo, MessageChain([Plain(value)]))
                 logger.info(f"[{PLUGIN_NAME}] 已直接发送文字: {value[:60]}")
@@ -704,6 +773,10 @@ class DshBridge(Star):
             await self.context.send_message(
                 umo, MessageChain([Plain("收到，丢给 dsh 了")])
             )
+            at_hint = await self._at_hints(event)
+            self._at_targets = re.findall(r"QQ (\d+)", at_hint)
+            if at_hint:
+                prompt = prompt + chr(10) + chr(10) + at_hint
             logger.info(f"[{PLUGIN_NAME}] 转发到 DSH: {prompt[:60]}")
             self._busy = True
             self._busy_since = time.time()
