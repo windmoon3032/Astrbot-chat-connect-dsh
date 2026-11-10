@@ -481,10 +481,23 @@ class DshBridge(Star):
                             break
                     if title:
                         break
+            done_turn = 0
+            for event in reversed(events):
+                if event.get("type") == "turn/end":
+                    try:
+                        done_turn = int((event.get("data") or {}).get("turn") or 0)
+                    except Exception:
+                        done_turn = 0
+                    break
+            # 新建后还没用过的空会话不列出，避免一堆“无标题”
+            if not title and done_turn == 0:
+                continue
+            if not title:
+                title = f"未命名会话（{path.parent.name[-6:]}）"
             result.append(
                 {
                     "id": path.parent.name,
-                    "title": (title[:40] + "…") if len(title) > 40 else (title or "（无标题）"),
+                    "title": (title[:40] + "…") if len(title) > 40 else title,
                     "mtime": mtime,
                 }
             )
@@ -571,7 +584,10 @@ class DshBridge(Star):
                 await self._send_text(umo, f"新建失败：{result.get('error') or result}")
                 return True
             self._save_session_override(sid)
-            await self._send_text(umo, f"已新建会话并切换：{sid}")
+            await self._send_text(
+                umo,
+                f"已在后台新建会话并切换转发目标：{sid}；DSH 窗口不会自动跳转，可在左侧会话列表手动打开它",
+            )
             return True
 
         if cmd in {"模型", "推理"}:
