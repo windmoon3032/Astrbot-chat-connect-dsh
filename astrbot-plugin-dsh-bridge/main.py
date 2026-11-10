@@ -612,6 +612,24 @@ class DshBridge(Star):
             text = str(event.message_str or "").strip()
             if not text:
                 return
+            # 子命令兜底：不依赖 prefixes 配置，/dsh会话、dsh 新建 等都能命中
+            sub_match = re.match(
+                r"^(?:@\S+\s*)*[/／]?(?:调用dsh|dsh)\s*(会话|列表|sessions|切换|新建|模型|推理)"
+                r"(?:\s+([\s\S]+))?$",
+                text,
+                re.I,
+            )
+            if sub_match:
+                cmd = sub_match.group(1)
+                arg = (sub_match.group(2) or "").strip()
+                logger.info(f"[{PLUGIN_NAME}] 子命令命中: {cmd} {arg[:30]}")
+                try:
+                    await self._handle_subcommand(f"{cmd} {arg}".strip(), event)
+                except Exception as exc:
+                    logger.error(f"[{PLUGIN_NAME}] 子命令处理失败: {exc}", exc_info=True)
+                    await self._send_text(event.unified_msg_origin, f"命令执行失败：{exc}")
+                event.stop_event()
+                return
             prefixes = self._cfg("prefixes", ["/调用dsh", "/dsh"]) or []
             matched = None
             for prefix in prefixes:
@@ -626,7 +644,16 @@ class DshBridge(Star):
                     return
                 matched = m.group(1).strip()
             prompt = matched.strip(" \t\r\n:：")
-            if await self._handle_subcommand(prompt, event):
+            logger.info(f"[{PLUGIN_NAME}] 指令命中: {prompt[:40]}")
+            try:
+                if await self._handle_subcommand(prompt, event):
+                    event.stop_event()
+                    return
+            except Exception as exc:
+                logger.error(f"[{PLUGIN_NAME}] 子命令处理失败: {exc}", exc_info=True)
+                await self._send_text(
+                    event.unified_msg_origin, f"命令执行失败：{exc}"
+                )
                 event.stop_event()
                 return
             if not prompt:
