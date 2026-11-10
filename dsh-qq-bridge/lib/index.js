@@ -23,7 +23,7 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 export const name = 'dsh-qq-bridge';
 export const inject = ['agents'];
 
-const VERSION = '0.4.6';
+const VERSION = '0.5.0';
 const MAX_BODY_BYTES = 256 * 1024;
 
 function safeEqual(a, b) {
@@ -97,7 +97,102 @@ export function apply(ctx, config = {}) {
     ctx.logger?.warn?.('dsh-qq-bridge: secret 为空，请在 cordis.patch.yml 里设置并与 bot 端一致');
   }
 
+  async function listSessionSummaries() {
+    const query = ctx.get('sessionQuery');
+    if (query && typeof query.listSessions === 'function') {
+      const records = await query.listSessions();
+      return records.map((record) => {
+        const header = record.header || {};
+        return {
+          sessionId: header.id || record.sessionId,
+          title: header.title || record.title || '',
+          cwd: header.cwd || record.cwd || '',
+          updatedAt: record.updatedAt || header.updatedAt || header.createdAt || 0,
+        };
+      });
+    }
+    const sessions = typeof ctx.sessions?.list === 'function' ? ctx.sessions.list() : [];
+    return sessions.map((session) => ({
+      sessionId: session.id,
+      title: session.header?.title || '',
+      cwd: session.header?.cwd || '',
+      updatedAt: Date.now(),
+    }));
+  }
+
+  function currentModelOf(sessionId) {
+    const agent = agents.get(sessionId);
+    if (!agent) return null;
+    try {
+      return agent.session.requestHeader()?.config || null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function createSession(cwd) {
+    const defaults = (() => {
+      try {
+        return ctx.agentDefaultModel?.currentSelection?.() || {};
+      } catch {
+        return {};
+      }
+    })();
+    const sessionId = `session-${randomUUID()}`;
+    await ctx.agents.create({
+      sessionId,
+      ...(cwd ? { meta: { cwd } } : {}),
+      ...(defaults.provider && defaults.model
+        ? { agentOptions: { provider: defaults.provider, model: defaults.model } }
+        : {}),
+    });
+    return sessionId;
+  }
+
+  async function applyModel(sessionId, body) {
+    const agent = agents.get(sessionId);
+    if (!agent) {
+      const error = new Error('session-not-live');
+      error.status = 409;
+      throw error;
+    }
+    if (!body.model && !body.provider && !body.reasoningEffort) {
+      const error = new Error('model or reasoningEffort is required');
+      error.status = 400;
+      throw error;
+    }
+    const base =
+      currentModelOf(sessionId) ||
+      (() => {
+        try {
+          return ctx.agentDefaultModel?.currentSelection?.() || {};
+        } catch {
+          return {};
+        }
+      })();
+    const llm = ctx.get('llm');
+    const resolved = await llm.resolveCallConfig({
+      provider: body.provider || base.provider,
+      model: body.model || base.model,
+      ...(body.reasoningEffort ? { reasoningEffort: String(body.reasoningEffort) } : {}),
+    });
+    const selection = {
+      provider: resolved.provider,
+      model: resolved.model,
+      ...(resolved.reasoningEffort === undefined ? {} : { reasoningEffort: resolved.reasoningEffort }),
+    };
+    const remote = ctx.get('remote');
+    if (remote?.session?.selectModel) {
+      await remote.session.selectModel({ sessionId, ...selection });
+    } else {
+      agent.session.append('model/selection', selection);
+    }
+    return selection;
+  }
+
   const busy = new Set();
+  const questionPending = new Map();
+  const activeRuns = new Map();
   const server = createServer((req, res) => {
     void handle(req, res).catch((error) => {
       sendJson(res, 500, { ok: false, error: String(error?.message || error) });
@@ -125,8 +220,15 @@ export function apply(ctx, config = {}) {
     busy.add(sessionId);
 
     const texts = [];
+    // agent.phase.lastTurn 是宿主内部字段，拿来当注入前的 turn 基线；
+    // 取不到就退化为 0，后面靠 sawOwnMessage + 宽限兜底。
+    let lastTurn = Number(agent?.phase?.lastTurn ?? 0) || 0;
+    let injectTurn = 0;
     let sawOwnMessage = false;
-    let targetTurn = 0;
+    let injected = false;
+    let graceTimer = null;
+    let completedTurn = 0;
+    let earlyQuestion = null;
     let settled = false;
     let resolveDone;
     let rejectDone;
@@ -137,10 +239,18 @@ export function apply(ctx, config = {}) {
 
     const userMessage = createUserMessage(prompt);
     const ownId = userMessage.id;
+    const runState = {
+      onQuestion: (request) => {
+        earlyQuestion = questionPayload(request);
+        finish();
+      },
+    };
+    activeRuns.set(sessionId, runState);
     let dispose;
     let timer;
     const cleanup = () => {
       if (timer) clearTimeout(timer);
+      if (graceTimer) clearTimeout(graceTimer);
       if (typeof dispose === 'function') {
         try {
           dispose();
@@ -161,28 +271,58 @@ export function apply(ctx, config = {}) {
       try {
         if (!session || session.id !== sessionId || !event) return;
         const data = event.data || {};
+        const turn = Number(data.turn || 0) || 0;
+        if (turn > lastTurn) lastTurn = turn;
+
+        // followup 在 agent 忙时会走 next-turn，宿主发的是 inbox/spliced 而不是 user/message
+        if (event.type === 'agent/inbox/spliced') {
+          const inserted = Array.isArray(data.inserted) ? data.inserted : [];
+          if (inserted.some((m) => String(m?.id || '') === ownId)) sawOwnMessage = true;
+          return;
+        }
         if (event.type === 'user/message') {
-          if (sawOwnMessage) return;
-          if (String(data.message?.id || '') === ownId) {
-            sawOwnMessage = true;
-            targetTurn = Number(data.turn || 0) || 0;
+          if (String(data.message?.id || '') === ownId) sawOwnMessage = true;
+          return;
+        }
+        if (!injected) return;
+
+        if (event.type === 'assistant/message') {
+          // 只收注入 turn 之后的 assistant 文本，避免把当前轮剩余内容混进来
+          if (turn > injectTurn) {
+            const text = messageText(data.message);
+            if (text) texts.push(text);
           }
           return;
         }
-        if (event.type === 'assistant/message' && sawOwnMessage) {
-          const text = messageText(data.message);
-          if (text) texts.push(text);
-          return;
-        }
-        if (event.type === 'turn/end' && sawOwnMessage) {
-          const turn = Number(data.turn || 0);
-          if (!targetTurn || !turn || turn >= targetTurn) finish();
+        if (event.type === 'turn/end') {
+          if (turn > injectTurn) {
+            const reasonKind = String(data.reason?.kind || '');
+            if (reasonKind && reasonKind !== 'completed') {
+              const error = new Error('cancelled');
+              error.status = 409;
+              error.detail = `turn ended: ${reasonKind}`;
+              completedTurn = turn;
+              finish(error);
+              return;
+            }
+            if (sawOwnMessage || texts.length) {
+              completedTurn = turn;
+              finish();
+            } else if (!graceTimer) {
+              // 理论上不会走到这里；万一没看到自己的消息，给 3 秒宽限再收尾
+              graceTimer = setTimeout(() => {
+                if (!settled) finish();
+              }, 3000);
+            }
+          }
         }
       } catch {
         /* 忽略畸形事件 */
       }
     };
 
+    injectTurn = lastTurn;
+    runState.injectTurn = injectTurn;
     dispose = ctx.on('session/event', onEvent);
     timer = setTimeout(() => {
       const error = new Error('timeout');
@@ -192,6 +332,7 @@ export function apply(ctx, config = {}) {
     }, Math.max(1000, timeoutMs || defaultTimeoutMs));
 
     try {
+      injected = true;
       agent.followup(userMessage);
     } catch (error) {
       cleanup();
@@ -201,14 +342,161 @@ export function apply(ctx, config = {}) {
 
     try {
       await done;
+      if (earlyQuestion) return { question: earlyQuestion, sessionId };
       return texts.join('\n\n').trim();
-    } finally {
+    } catch (error) {
       busy.delete(sessionId);
+      throw error;
+    } finally {
+      if (!earlyQuestion) activeRuns.delete(sessionId);
     }
   }
 
+  function questionPayload(request) {
+    const questions = (request.questions || []).map((q) => ({
+      id: String(q.id || ''),
+      header: String(q.header || ''),
+      question: String(q.question || ''),
+      options: (q.options || []).map((o) => (typeof o === 'string' ? o : String(o.label || o.value || ''))),
+    }));
+    return { callId: String(request.callId || request.wait?.callId || ''), questions };
+  }
+
+  function answerQuestion(sessionId, inputAnswers, timeoutMs) {
+    const pending = questionPending.get(sessionId);
+    if (!pending) {
+      const error = new Error('no-pending-question');
+      error.status = 409;
+      return Promise.reject(error);
+    }
+    const questions = pending.request.questions || [];
+    let answers = inputAnswers;
+    if (!Array.isArray(answers)) {
+      const text = String(answers || '').trim();
+      answers = questions.map((q) => ({ id: q.id, selected: [], custom: text }));
+    }
+    questionPending.delete(sessionId);
+    pending.resolve({ answers });
+
+    const agent = agents.get(sessionId);
+    const run = activeRuns.get(sessionId);
+    const baseTurn = Number(run?.injectTurn ?? agent?.phase?.lastTurn ?? 0) || 0;
+    return new Promise((resolve, reject) => {
+      const texts = [];
+      let settled = false;
+      let dispose;
+      let timer;
+      const done = (error, turn) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try {
+          dispose?.();
+        } catch {
+          /* ignore */
+        }
+        busy.delete(sessionId);
+        activeRuns.delete(sessionId);
+        if (error) reject(error);
+        else resolve({ text: texts.join('\n\n').trim(), turn });
+      };
+      dispose = ctx.on('session/event', (session, event) => {
+        if (!session || session.id !== sessionId || !event) return;
+        const data = event.data || {};
+        const turn = Number(data.turn || 0) || 0;
+        if (event.type === 'assistant/message' && turn > baseTurn) {
+          const text = messageText(data.message);
+          if (text) texts.push(text);
+        }
+        if (event.type === 'turn/end' && turn > baseTurn) {
+          const kind = String(data.reason?.kind || '');
+          if (kind && kind !== 'completed') {
+            const error = new Error('cancelled');
+            error.status = 409;
+            error.detail = `turn ended: ${kind}`;
+            done(error);
+            return;
+          }
+          done(null, turn);
+        }
+      });
+      timer = setTimeout(() => {
+        const error = new Error('timeout');
+        error.status = 504;
+        error.partial = texts.join('\n\n').trim();
+        done(error);
+      }, Math.max(1000, timeoutMs || defaultTimeoutMs));
+    });
+  }
+
+  ctx.on('user-questions/request', async (request, next) => {
+    const sid = request.agent?.session?.id;
+    const run = sid ? activeRuns.get(sid) : undefined;
+    if (!sid || !run || questionPending.has(sid)) return next();
+    return await new Promise((resolve) => {
+      questionPending.set(sid, { request, resolve });
+      try {
+        run.onQuestion(request);
+      } catch {
+        /* ignore */
+      }
+    });
+  }, { global: true });
+
   async function handle(req, res) {
     const url = new URL(req.url || '/', 'http://dsh.local');
+
+    if (req.method === 'GET' && url.pathname === '/sessions') {
+      try {
+        const items = await listSessionSummaries();
+        return sendJson(res, 200, { ok: true, count: items.length, items });
+      } catch (error) {
+        return sendJson(res, 500, { ok: false, error: 'sessions-failed', detail: String(error) });
+      }
+    }
+
+    if (req.method === 'POST' && url.pathname === '/session/new') {
+      try {
+        const body = JSON.parse((await readBody(req, MAX_BODY_BYTES)) || '{}');
+        const sessionId = await createSession(String(body.cwd || '').trim() || undefined);
+        return sendJson(res, 200, { ok: true, sessionId });
+      } catch (error) {
+        return sendJson(res, 500, { ok: false, error: 'create-failed', detail: String(error) });
+      }
+    }
+
+    if (req.method === 'POST' && url.pathname === '/model') {
+      try {
+        const body = JSON.parse((await readBody(req, MAX_BODY_BYTES)) || '{}');
+        const sessionId = String(body.sessionId || '').trim();
+        if (!sessionId) return sendJson(res, 400, { ok: false, error: 'sessionId is required' });
+        const selection = await applyModel(sessionId, body);
+        return sendJson(res, 200, { ok: true, selection });
+      } catch (error) {
+        return sendJson(res, error.status || 500, {
+          ok: false,
+          error: error.status === 409 ? 'session-not-live' : 'model-change-failed',
+          detail: String(error),
+        });
+      }
+    }
+
+    if (req.method === 'POST' && url.pathname === '/answer') {
+      try {
+        const body = JSON.parse((await readBody(req, MAX_BODY_BYTES)) || '{}');
+        const sessionId = String(body.sessionId || '').trim();
+        if (!sessionId) return sendJson(res, 400, { ok: false, error: 'sessionId is required' });
+        const result = await answerQuestion(sessionId, body.answers, Number(body.timeoutMs || defaultTimeoutMs));
+        return sendJson(res, 200, { ok: true, sessionId, ...result });
+      } catch (error) {
+        return sendJson(res, error.status || 500, {
+          ok: false,
+          error: String(error?.message || error),
+          detail: error?.detail || undefined,
+          partial: error?.partial || undefined,
+        });
+      }
+    }
 
     if (req.method === 'GET' && url.pathname === '/health') {
       sendJson(res, 200, {
@@ -262,11 +550,21 @@ export function apply(ctx, config = {}) {
 
     const started = Date.now();
     try {
-      const text = await runPrompt(sessionId, prompt, timeoutMs);
+      const result = await runPrompt(sessionId, prompt, timeoutMs);
+      if (result && typeof result === 'object' && result.question) {
+        sendJson(res, 200, {
+          ok: true,
+          sessionId,
+          question: result.question,
+          elapsedMs: Date.now() - started,
+        });
+        return;
+      }
       sendJson(res, 200, {
         ok: true,
         sessionId,
-        text,
+        turn: completedTurn,
+        text: result,
         elapsedMs: Date.now() - started,
       });
     } catch (error) {

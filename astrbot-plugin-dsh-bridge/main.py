@@ -54,6 +54,7 @@ class DshBridge(Star):
         self._cache: dict[str, tuple[int, int, list[dict]]] = {}
         self._sent_turns: dict[str, int] = {}
         self._at_targets: list[str] = []
+        self._pending_question: dict | None = None
         self._session_override: str = self._load_session_override()
         self._notify_state: dict[str, int] = {}
         self._notify_task: asyncio.Task | None = None
@@ -687,6 +688,80 @@ class DshBridge(Star):
 
         return False
 
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=10 ** 9 - 100)
+    async def on_question_answer(self, event: AstrMessageEvent):
+        pending = self._pending_question
+        if not pending:
+            return
+        if time.time() - float(pending.get("ts") or 0) > 1800:
+            self._pending_question = None
+            self._busy = False
+            self._busy_since = 0.0
+            return
+        if str(event.unified_msg_origin or "") != str(pending.get("umo") or ""):
+            return
+        if not self._is_admin(event):
+            return
+        text = str(event.message_str or "").strip()
+        if not text or text.startswith("/"):
+            return
+        self._pending_question = None
+        event.stop_event()
+        await self.context.send_message(
+            event.unified_msg_origin, MessageChain([Plain("收到，继续执行…")])
+        )
+        task = asyncio.create_task(self._answer_question(pending, text))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _answer_question(self, pending: dict, answer: str) -> None:
+        session_id = str(pending.get("sessionId") or "")
+        umo = str(pending.get("umo") or "")
+        question = pending.get("question") or {}
+        ids = [str(q.get("id") or "") for q in question.get("questions") or []]
+        answers = [{"id": qid, "selected": [], "custom": answer} for qid in ids if qid] or answer
+        payload = {
+            "sessionId": session_id,
+            "answers": answers,
+            "timeoutMs": int(float(self._cfg("timeout_seconds", 1500) or 1500) * 1000),
+        }
+        timeout = float(self._cfg("timeout_seconds", 1500) or 1500) + 60
+        try:
+            result = await asyncio.to_thread(self._http_json, "answer", payload, timeout)
+        except Exception as exc:
+            self._busy = False
+            self._busy_since = 0.0
+            await self._send_text(umo, f"提交答案失败：{exc}")
+            return
+        try:
+            if not result.get("ok"):
+                err = str(result.get("error") or "unknown")
+                if err == "cancelled":
+                    await self._send_text(umo, "任务已被手动终止")
+                elif err == "timeout":
+                    await self._send_text(umo, "DSH 执行超时，已中止收集")
+                else:
+                    await self._send_text(umo, f"继续执行失败：{err}")
+                return
+            text = str(result.get("text") or "").strip()
+            if not text:
+                text = "（执行完了，但 DSH 没返回文本）"
+            await self._send_text(umo, text)
+            if bool(self._cfg("send_screenshot", True)) and win_ui is not None:
+                try:
+                    hwnd = win_ui.find_window(str(self._cfg("window_keyword", "DeepSeek Harness")))
+                    if hwnd:
+                        shot = _PLUGIN_DIR / "shots" / f"dsh_{int(time.time())}.png"
+                        img_path = win_ui.capture_window(hwnd, shot)
+                        await self.context.send_message(
+                            umo, MessageChain([Image.fromFileSystem(img_path)])
+                        )
+                except Exception as exc:
+                    logger.warning(f"[{PLUGIN_NAME}] 截图失败: {exc}")
+        finally:
+            self._busy = False
+            self._busy_since = 0.0
+
     @filter.event_message_type(filter.EventMessageType.ALL, priority=10 ** 9 - 600)
     async def on_dsh_command(self, event: AstrMessageEvent):
         try:
@@ -850,11 +925,31 @@ class DshBridge(Star):
                 self._sent_turns[session_id] = int(payload["turn"])
         except Exception:
             pass
+        question = payload.get("question")
+        if payload.get("ok") and isinstance(question, dict):
+            self._pending_question = {
+                "sessionId": session_id,
+                "umo": umo,
+                "question": question,
+                "ts": time.time(),
+            }
+            lines = ["DSH 在等你回答，直接发消息即可："]
+            for idx, item in enumerate(question.get("questions") or [], 1):
+                header = str(item.get("header") or "").strip()
+                body = str(item.get("question") or "").strip()
+                opts = item.get("options") or []
+                line = f"{idx}. {header + '：' if header else ''}{body}"
+                if opts:
+                    line += "（可选：" + " / ".join(str(o) for o in opts) + "）"
+                lines.append(line)
+            await self._send_text(umo, "\n".join(lines))
+            return
         if not payload.get("ok"):
             err = str(payload.get("error") or "unknown")
             mapping = {
                 "session-not-live": "这个会话不在 DSH 进程里活着（桌面里没开着它）",
                 "bad secret": "共享密钥不对（DSH 和 bot 两边要一致）",
+                "cancelled": "任务已被手动终止，未发送完成通知和截图",
                 "session-busy": "这个会话正在执行上一条，等它跑完再发",
                 "timeout": "DSH 执行超过等待上限，已中止收集",
             }
@@ -989,5 +1084,6 @@ class DshBridge(Star):
             except Exception:
                 pass
         finally:
-            self._busy = False
-            self._busy_since = 0.0
+            if not self._pending_question:
+                self._busy = False
+                self._busy_since = 0.0
