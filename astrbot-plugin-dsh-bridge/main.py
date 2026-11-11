@@ -863,26 +863,7 @@ class DshBridge(Star):
                 )
                 event.stop_event()
                 return
-            if self._busy:
-                elapsed = time.time() - float(self._busy_since or 0)
-                limit = float(self._cfg("timeout_seconds", 1500) or 1500) + 180
-                if elapsed > limit:
-                    logger.warning(
-                        f"[{PLUGIN_NAME}] 忙锁已 {int(elapsed)}s，超过上限 {int(limit)}s，强制释放"
-                    )
-                    self._busy = False
-                    self._busy_since = 0.0
-                else:
-                    minutes = int(elapsed // 60)
-                    suffix = f"（已 {minutes} 分钟）" if minutes >= 1 else ""
-                    await self.context.send_message(
-                        event.unified_msg_origin,
-                        MessageChain(
-                            [Plain(f"上一个 dsh 任务还在跑{suffix}，等它完")]
-                        ),
-                    )
-                    event.stop_event()
-                    return
+            # 不拦并发：不同会话可以同时跑，同一会话由 DSH 返回 session-busy
             umo = event.unified_msg_origin
             event.stop_event()
             await self.context.send_message(
