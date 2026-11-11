@@ -1004,6 +1004,7 @@ class DshBridge(Star):
         if not text:
             text = "（执行完了，但 DSH 没返回文本）"
         await self._send_text(umo, text)
+        await self._send_generated_files(umo, payload.get("files"))
         if bool(self._cfg("send_screenshot", True)) and win_ui is not None:
             try:
                 hwnd = win_ui.find_window(str(self._cfg("window_keyword", "DeepSeek Harness")))
