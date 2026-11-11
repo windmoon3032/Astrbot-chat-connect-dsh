@@ -261,6 +261,23 @@ class DshBridge(Star):
             return False
         return True
 
+    async def _send_generated_files(self, umo: str, files) -> None:
+        """把 DSH 本轮生成/修改的文件发到 QQ。"""
+        if not files or not bool(self._cfg("send_generated_files", True)):
+            return
+        limit = int(self._cfg("max_generated_files", 5) or 5)
+        for item in list(files)[:limit]:
+            path = Path(str((item or {}).get("path") or ""))
+            if not path.is_file():
+                continue
+            try:
+                await self.context.send_message(
+                    umo, MessageChain([File(name=path.name, file=str(path))])
+                )
+                logger.info(f"[{PLUGIN_NAME}] 已发送 DSH 生成文件: {path}")
+            except Exception as exc:
+                logger.warning(f"[{PLUGIN_NAME}] 发送文件失败 {path}: {exc}")
+
     def _write_reply_markdown(self, umo: str, text: str) -> Path:
         """把长回复写成 Markdown：元信息 + 正文，避免 JSON 转义影响阅读。"""
         base = _PLUGIN_DIR / "files"
@@ -769,6 +786,7 @@ class DshBridge(Star):
             if not text:
                 text = "（执行完了，但 DSH 没返回文本）"
             await self._send_text(umo, text)
+            await self._send_generated_files(umo, result.get("files"))
             if bool(self._cfg("send_screenshot", True)) and win_ui is not None:
                 try:
                     hwnd = win_ui.find_window(str(self._cfg("window_keyword", "DeepSeek Harness")))

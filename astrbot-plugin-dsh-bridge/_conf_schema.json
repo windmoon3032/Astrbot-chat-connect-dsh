@@ -120,6 +120,16 @@
         "type": "int",
         "description": "只扫描最近多少小时内更新的会话",
         "default": 48
+      },
+      "send_generated_files": {
+        "type": "bool",
+        "description": "把 DSH 本轮生成/修改的文件发到 QQ",
+        "default": true
+      },
+      "max_generated_files": {
+        "type": "int",
+        "description": "单轮最多发送几个文件",
+        "default": 5
       }
     }
   }
