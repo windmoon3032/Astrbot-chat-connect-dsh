@@ -610,7 +610,7 @@ class DshBridge(Star):
         cmd = parts[0].lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
         umo = event.unified_msg_origin
-        if cmd not in {"会话", "列表", "sessions", "切换", "新建", "模型", "推理"}:
+        if cmd not in {"会话", "列表", "sessions", "切换", "新建", "模型", "推理", "停止"}:
             return False
 
         if cmd in {"会话", "列表", "sessions"}:
@@ -658,6 +658,28 @@ class DshBridge(Star):
                 umo,
                 f"已在后台新建会话并切换转发目标：{sid}；DSH 窗口不会自动跳转，可在左侧会话列表手动打开它",
             )
+            return True
+
+        if cmd == "停止":
+            target = self._session_override or self._bridge_session_id()
+            if not target:
+                await self._send_text(umo, "没有可停止的会话，先发 /dsh 会话 或 /dsh 新建")
+                return True
+            if not self._busy and not self._pending_question:
+                await self._send_text(umo, "当前没有正在执行的任务")
+                return True
+            result = await asyncio.to_thread(
+                self._http_json, "stop", {"sessionId": target}
+            )
+            self._busy = False
+            self._busy_since = 0.0
+            self._pending_question = None
+            if result.get("ok"):
+                await self._send_text(umo, "已发送停止指令，等 DSH 收尾")
+            elif str(result.get("error") or "") == "not-running":
+                await self._send_text(umo, "DSH 当前没有在跑任务")
+            else:
+                await self._send_text(umo, f"停止失败：{result.get('error') or result}")
             return True
 
         if cmd in {"模型", "推理"}:
@@ -774,7 +796,7 @@ class DshBridge(Star):
                 return
             # 子命令兜底：不依赖 prefixes 配置，/dsh会话、dsh 新建 等都能命中
             sub_match = re.match(
-                r"^(?:@\S+\s*)*[/／]?(?:调用dsh|dsh)\s*(会话|列表|sessions|切换|新建|模型|推理)"
+                r"^(?:@\S+\s*)*[/／]?(?:调用dsh|dsh)\s*(会话|列表|sessions|切换|新建|模型|推理|停止)"
                 r"(?:\s+([\s\S]+))?$",
                 text,
                 re.I,
