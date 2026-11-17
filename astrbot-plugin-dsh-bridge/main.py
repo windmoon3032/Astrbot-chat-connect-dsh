@@ -635,7 +635,7 @@ class DshBridge(Star):
             if not items:
                 await self._send_text(umo, "没找到 DSH 会话记录")
                 return True
-            current = self._session_override or self._bridge_session_id()
+            current = self._session_override or str(self._cfg("session_id", "") or "").strip()
             lines = [f"DSH 会话共 {len(items)} 个（最近 20 个）："]
             for idx, item in enumerate(items[:20], 1):
                 mark = " ← 当前" if item["id"] == current else ""
@@ -883,11 +883,11 @@ class DshBridge(Star):
             logger.error(f"[{PLUGIN_NAME}] 指令处理失败: {exc}")
 
     def _bridge_session_id(self) -> str:
+        """QQ 端固定的目标会话；绝不跟随桌面端当前打开的会话。"""
+        if self._session_override:
+            return self._session_override
         sid = str(self._cfg("session_id", "") or "").strip()
-        if sid:
-            return sid
-        path = self._session_path()
-        return path.parent.name if path is not None else ""
+        return sid
 
     async def _run_http(self, prompt: str, umo: str) -> None:
         import urllib.error
@@ -903,8 +903,14 @@ class DshBridge(Star):
             return
         session_id = self._bridge_session_id()
         if not session_id:
-            await self._send_text(umo, "没找到当前 DSH 会话 id，请在配置里填 session_id")
-            return
+            # 第一次使用时绑定到当时最新的会话，之后固定，不再随桌面切换变化
+            path = self._session_path()
+            if path is not None:
+                session_id = path.parent.name
+                self._save_session_override(session_id)
+            if not session_id:
+                await self._send_text(umo, "没找到可用的 DSH 会话，先发 /dsh 会话 或 /dsh 新建")
+                return
         timeout = float(self._cfg("timeout_seconds", 1500) or 1500)
         body = json.dumps(
             {"prompt": prompt, "sessionId": session_id, "timeoutMs": int(timeout * 1000)},
