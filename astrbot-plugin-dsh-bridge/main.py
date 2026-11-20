@@ -619,6 +619,23 @@ class DshBridge(Star):
 
         return _do()
 
+    def _http_get(self, path: str, timeout: float = 15) -> dict:
+        import urllib.error
+        import urllib.request
+
+        base = str(self._cfg("bridge_url", "http://127.0.0.1:5795/prompt") or "")
+        base = base.rsplit("/", 1)[0]
+        url = f"{base}/{path.lstrip('/')}"
+        secret = str(self._cfg("bridge_secret", "") or "").strip()
+        req = urllib.request.Request(
+            url, headers={"x-bridge-secret": secret}, method="GET"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8", "ignore") or "{}")
+        except Exception:
+            return {}
+
     async def _handle_subcommand(self, prompt: str, event: AstrMessageEvent) -> bool:
         """处理 /dsh 会话/切换/新建/模型/推理；返回 True 表示已处理。"""
         if not prompt:
@@ -627,7 +644,7 @@ class DshBridge(Star):
         cmd = parts[0].lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
         umo = event.unified_msg_origin
-        if cmd not in {"会话", "列表", "sessions", "切换", "新建", "模型", "推理", "停止"}:
+        if cmd not in {"会话", "列表", "sessions", "切换", "新建", "模型", "推理", "停止", "重绑"}:
             return False
 
         if cmd in {"会话", "列表", "sessions"}:
@@ -636,9 +653,20 @@ class DshBridge(Star):
                 await self._send_text(umo, "没找到 DSH 会话记录")
                 return True
             current = self._session_override or str(self._cfg("session_id", "") or "").strip()
+            live_map = {}
+            try:
+                live_data = await asyncio.to_thread(self._http_get, "sessions")
+                live_map = {
+                    str(it.get("sessionId")): bool(it.get("live"))
+                    for it in (live_data.get("items") or [])
+                }
+            except Exception:
+                live_map = {}
             lines = [f"DSH 会话共 {len(items)} 个（最近 20 个）："]
             for idx, item in enumerate(items[:20], 1):
                 mark = " ← 当前" if item["id"] == current else ""
+                if live_map:
+                    mark += "（在线）" if live_map.get(item["id"]) else "（离线）"
                 lines.append(f"{idx}. {item['title']}{mark}")
             lines.append("切换：/dsh 切换 <序号或 session-id>")
             await self._send_text(umo, "\n".join(lines))
@@ -659,6 +687,19 @@ class DshBridge(Star):
                 return True
             self._save_session_override(target)
             await self._send_text(umo, f"已切换转发目标到 {target}")
+            return True
+
+        if cmd == "重绑":
+            self._save_session_override("")
+            path = self._session_path()
+            if path is None:
+                await self._send_text(umo, "没找到会话记录，先发 /dsh会话 看看")
+                return True
+            sid = path.parent.name
+            self._save_session_override(sid)
+            await self._send_text(
+                umo, f"已重新绑定到最新会话：{sid}（如果它不在线，请在 DSH 里打开它）"
+            )
             return True
 
         if cmd == "新建":
@@ -814,7 +855,7 @@ class DshBridge(Star):
                 return
             # 子命令兜底：不依赖 prefixes 配置，/dsh会话、dsh 新建 等都能命中
             sub_match = re.match(
-                r"^(?:@\S+\s*)*[/／]?(?:调用dsh|dsh)\s*(会话|列表|sessions|切换|新建|模型|推理|停止)"
+                r"^(?:@\S+\s*)*[/／]?(?:调用dsh|dsh)\s*(会话|列表|sessions|切换|新建|模型|推理|停止|重绑)"
                 r"(?:\s+([\s\S]+))?$",
                 text,
                 re.I,
@@ -974,7 +1015,7 @@ class DshBridge(Star):
         if not payload.get("ok"):
             err = str(payload.get("error") or "unknown")
             mapping = {
-                "session-not-live": "这个会话不在 DSH 进程里活着（桌面里没开着它）",
+                "session-not-live": "这个会话不在 DSH 进程里活着：可能 DSH 重启过，或桌面没打开它；发 /dsh会话 看在线会话，或 /dsh重绑",
                 "bad secret": "共享密钥不对（DSH 和 bot 两边要一致）",
                 "cancelled": "任务已被手动终止，未发送完成通知和截图",
                 "session-busy": "这个会话正在执行上一条，等它跑完再发",
